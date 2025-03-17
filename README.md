@@ -17,6 +17,6 @@ using socket
 ## Installation 🔧  
 1. Clone this repository:  
    ```bash
-   git clone https://github.com/yourusername/terminal-chat-room.git
-   cd terminal-chat-room
+   git clone https://github.com/GochiStuff/protoPulse.git
+   cd YPTOTOCOL
 
