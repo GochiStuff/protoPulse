@@ -1,10 +1,10 @@
 import socket
 import threading
 
-HOST = 'localhost'
-PORT = 4000
+PORT = 4000  
 
 def receive_messages(s):
+    """Receives messages from the server and displays them."""
     while True:
         try:
             data = s.recv(1024).decode()
@@ -14,23 +14,30 @@ def receive_messages(s):
         except:
             break
 
-# Connect to server 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect((HOST, PORT))
 
-    USERNAME = input("Enter username: ").strip()
+if __name__ == "__main__":
+        
+    server_ip = input("Enter server IP address (without port): ").strip()
 
-    s.sendall((USERNAME + ": has joined the chat.").encode())
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((server_ip, PORT))  # Use IP without ':PORT'
 
-    threading.Thread(target=receive_messages, args=(s,), daemon=True).start()
+            USERNAME = input("Enter username: ").strip()
+            s.sendall((USERNAME + ": has joined the chat.").encode())
 
-    print("\nConnected to chat.")
-    print("Instructions:\n - Type a message and hit Enter to send.\n - Type 'exit' to leave the chat.\n")
+            threading.Thread(target=receive_messages, args=(s,), daemon=True).start()
 
-    while True:
-        msg = input()
-        if msg.lower() == "exit":
-            break
-        s.sendall(f"{USERNAME}: {msg}".encode())  
+            print("\nConnected to chat.")
+            print("Instructions:\n - Type a message and hit Enter to send.\n - Type 'exit' to leave the chat.\n")
 
-    print("Disconnected.")
+            while True:
+                msg = input()
+                if msg.lower() == "exit":
+                    break
+                s.sendall(f"{USERNAME}: {msg}".encode())
+
+        print("Disconnected.")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")

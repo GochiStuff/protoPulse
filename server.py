@@ -1,22 +1,29 @@
 import socket
 import threading
 
-HOST = 'localhost'
+HOST = '0.0.0.0'  
 PORT = 4000
 
-clients = []  
+clients = []
+server_running = True 
+
+def get_local_ip():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except:
+        return "Unable to determine IP"
 
 def handle_clients(conn, addr):
-    
-
+    global clients
     clients.append(conn)
-
+    
     try:
-        while True:
+        while server_running:
             data = conn.recv(1024).decode()
             if not data:
                 break
-
 
             parts = data.split(":", 1)
             if len(parts) < 2:
@@ -25,27 +32,30 @@ def handle_clients(conn, addr):
             sender = parts[0].strip()
             msg = parts[1].strip()
             print(f"{sender} : {msg}")
+
             for client in clients:
-                if client != conn: 
+                if client != conn:
                     try:
                         client.sendall(f"{sender} : {msg}".encode())
                     except:
                         clients.remove(client)
-
+    
     except ConnectionResetError:
         print(f"Client {addr} disconnected.")
-
+    
     finally:
         conn.close()
-        clients.remove(conn)
+        if conn in clients:
+            clients.remove(conn)
         print(f"Connection closed: {addr}")
 
-
 def admin_chat():
-    while True:
-        msg = input("You : ") 
+    global server_running
+    while server_running:
+        msg = input("Admin: ")
         if msg.lower() == "exit":
-            end = True
+            print("Shutting down server...")
+            server_running = False  
             break
         for client in clients:
             try:
@@ -53,17 +63,24 @@ def admin_chat():
             except:
                 clients.remove(client)
 
-end = False
+# start 
+if __name__ == "__main__":
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
+        server.bind((HOST, PORT))
+        server.listen()
+        
+        local_ip = get_local_ip()
+        print(f"🔹 Server started! Connect using IP: {local_ip}:{PORT}")
 
-#  Server setup 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-    server.bind((HOST, PORT))
-    server.listen()
-    
-    print(f"Server listening on {HOST}:{PORT}")
+        threading.Thread(target=admin_chat, daemon=True).start()  
 
-    threading.Thread(target=admin_chat, daemon=True).start()  # Allow admin to chat
+        while server_running:
+            try:
+                server.settimeout(1) 
+                conn, addr = server.accept()
+                threading.Thread(target=handle_clients, args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                continue  
 
-    while not end :
-        conn, addr = server.accept()
-        threading.Thread(target=handle_clients, args=(conn, addr), daemon=True).start()
+    print("Server stopped.")
