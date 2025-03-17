@@ -2,6 +2,9 @@
 
 A simple multi-client chat room built using Python's `socket` and `threading` modules. Supports multiple users and an admin who can send messages from the server.  
 
+Build on TCP 
+using socket 
+
 ## Features 🚀  
 - Multi-client chat system  
 - Real-time messaging  
