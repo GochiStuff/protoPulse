@@ -1,167 +1,166 @@
 import socket
 import threading
-import time
-import cv2
+import ffmpeg
+import numpy as np
 import struct
-import subprocess
-import pyaudio
+import tkinter as tk
+from tkinter import messagebox
 
 
-
-
-HOST = 'localhost'  
 VIDEO_PORT = 4000
 AUDIO_PORT = 4001
+CONTROL_PORT = 6969
+VIDEO_FILE = 'video.mp4'  
 
-# Controls for playback
-PAUSE = True
-SEEK = None  # For jumping to a specific second
-STOP = False
-
-video_file = 'video.mp4'
-
-def controls():
-    global PAUSE, SEEK, STOP  
-    while True:
-        user_input = input("\nEnter command (play, pause, seek <second>, stop): ").strip()
-        if user_input.lower() == "play":
-            PAUSE = False
-        elif user_input.lower() == "pause":
-            PAUSE = True
-        elif user_input.lower().startswith("seek"):
-            try:
-                SEEK = int(user_input.split(" ")[1])
-                PAUSE = True
-            except ValueError:
-                print("Invalid seek input. Use: seek <second>")
-        elif user_input.lower() == "stop":
-            STOP = True
-            break
+control_conn = None
+control_conn_lock = threading.Lock()  
 
 
-def audio_stream():
-    global PAUSE, SEEK , STOP
 
-    # EXTRACT AUDIO
-    ffmpeg_cmd = [
-        "ffmpeg", "-i", video_file,    # Input video
-        "-vn",                         # No video
-        "-ac", "2",                     # 2 audio channels
-        "-ar", "44100",                 # Audio sample rate
-        "-f", "wav", "-"                # Output as WAV stream
-    ]
+def get_video_info(filename):
+    """Probe the video file and return (width, height, fps)."""
+    probe = ffmpeg.probe(filename)
+    video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+    width = int(video_stream['width'])
+    height = int(video_stream['height'])
+    fps_str = video_stream.get('r_frame_rate', '25/1')
+    num, den = fps_str.split('/')
+    fps = float(num) / float(den)
+    return width, height, fps
 
-    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE , stderr=subprocess.DEVNULL)
+def get_audio_info(filename):
+    """Probe the video file and return (sample_rate, channels)."""
+    probe = ffmpeg.probe(filename)
+    audio_stream = next(s for s in probe['streams'] if s['codec_type'] == 'audio')
+    sample_rate = int(audio_stream['sample_rate'])
+    channels = int(audio_stream['channels'])
+    return sample_rate, channels
 
-    # Configure PyAudio
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=p.get_format_from_width(2),   # 16-bit audio
-        channels=2,
-        rate=44100,
-        output=True
+def stream_video(conn, filename):
+    width, height, fps = get_video_info(filename)
+    # Send header: width (I), height (I), fps (f) → 12 bytes total.
+    header = struct.pack('IIf', width, height, fps)
+    conn.sendall(header)
+    
+    # Use "-re" for real-time reading.
+    process = (
+        ffmpeg
+        .input(filename, **{'re': None})
+        .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+        .run_async(pipe_stdout=True)
     )
-
-    print("🎵 Playing Audio...")
-
+    
+    frame_size = width * height * 3
     try:
-        while not STOP:
-            audio_data = process.stdout.read(1024)
-            
-            if not audio_data:
+        while True:
+            in_bytes = process.stdout.read(frame_size)
+            if not in_bytes:
                 break
-
-            stream.write(audio_data)
-
-    except Exception as e:
-        print(f"❌ Error playing audio: {e}")
-    
+            conn.sendall(in_bytes)
     finally:
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
-        process.kill()
-        print("🎵 Audio playback stopped.")
+        process.stdout.close()
+        process.wait()
+        conn.close()
+        print("[Video] Streaming ended.")
 
-
-def video_stream():
-    global PAUSE, SEEK, STOP 
-
-    # MANAGE VIDEO !!
-    if not video_file:
-        print("No video file specified. Please provide a valid video file.")
-        return
+def stream_audio(conn, filename):
+    sample_rate, channels = get_audio_info(filename)
+    # Send header: sample_rate (I), channels (I) → 8 bytes.
+    header = struct.pack('II', sample_rate, channels)
+    conn.sendall(header)
     
-    cap = cv2.VideoCapture(video_file)
-
-    if not cap.isOpened():
-        print("Error opening video file")
-        return
+    process = (
+        ffmpeg
+        .input(filename, **{'re': None})
+        .output('pipe:', format='s16le', acodec='pcm_s16le', ac=channels, ar=sample_rate)
+        .run_async(pipe_stdout=True)
+    )
     
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    frame_time = 1 / fps
+    chunk_size = 4096
+    try:
+        while True:
+            audio_bytes = process.stdout.read(chunk_size)
+            if not audio_bytes:
+                break
+            conn.sendall(audio_bytes)
+    finally:
+        process.stdout.close()
+        process.wait()
+        conn.close()
+        print("[Audio] Streaming ended.")
+
+def control_connection_accept():
+    """
+    Accept a connection on the control port and store it globally.
+    This thread will block until a client connects.
+    """
+    global control_conn
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('0.0.0.0', CONTROL_PORT))
+        s.listen(1)
+        print(f"[Control] Server listening on port {CONTROL_PORT}")
+        conn, addr = s.accept()
+        with control_conn_lock:
+            control_conn = conn
+        print(f"[Control] Connection from {addr}")
+        # This thread will keep the connection open until STOP is sent.
+        while True:
+            try:
+                data = conn.recv(1024)
+                if not data:
+                    break
+            except Exception as e:
+                print(f"[Control] Exception: {e}")
+                break
+        with control_conn_lock:
+            control_conn = None
+        print("[Control] Connection closed.")
+
+def send_control_command(cmd):
+    """
+    Send a control command to the connected client.
+    """
+    global control_conn
+    with control_conn_lock:
+        if control_conn:
+            try:
+                control_conn.sendall(cmd.encode('utf-8'))
+                print(f"[Control] Sent command: {cmd}")
+            except Exception as e:
+                print(f"[Control] Error sending command: {e}")
+        else:
+            messagebox.showerror("Error", "No control client connected.")
+
+def start_video_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('0.0.0.0', VIDEO_PORT))
+        s.listen(1)
+        print(f"[Video] Server listening on port {VIDEO_PORT}")
+        conn, addr = s.accept()
+        print(f"[Video] Connection from {addr}")
+        stream_video(conn, VIDEO_FILE)
+
+def start_audio_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('0.0.0.0', AUDIO_PORT))
+        s.listen(1)
+        print(f"[Audio] Server listening on port {AUDIO_PORT}")
+        conn, addr = s.accept()
+        print(f"[Audio] Connection from {addr}")
+        stream_audio(conn, VIDEO_FILE)
+
+
+# START SERVER
+def main():
+    threads = []
+    threads.append(threading.Thread(target=start_video_server, daemon=True))
+    threads.append(threading.Thread(target=start_audio_server, daemon=True))
+    threads.append(threading.Thread(target=control_connection_accept, daemon=True))
+
+    for t in threads:
+        t.start()
     
-    while cap.isOpened() and not STOP:
-        if PAUSE:
-            cv2.waitKey(10)
-            continue
+    
 
-        if SEEK is not None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, SEEK * fps)
-            SEEK = None
-
-        ret, frame = cap.read()
-
-        if not ret:
-            print("❌ End of video.")
-            break
-
-        cv2.imshow("ProtoPulse - Video + Audio", frame)
-
-        if cv2.waitKey(int(frame_time * 1000)) & 0xFF == ord('q'):
-            STOP = True
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    print("🎥 Video playback stopped.")
-
-def handle_clients(video_conn , audio_conn ):
-
-    # activate controls 
-    threading.Thread(target=controls, daemon=True).start()  
-
-    video_stream()
-    audio_stream()
-
-
-    # try:
-    #     data = conn.recv(1024).decode()
-    #     print(f"{addr} says: {data}")
-    # finally:
-    #     conn.close()
-    #     print(f"Connection from {addr} closed")
-
-# Start server
-if __name__ == "__main__":
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as video_server, \
-         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as audio_server:
-
-        video_server.bind((HOST, VIDEO_PORT))
-        audio_server.bind((HOST, AUDIO_PORT))
-
-        video_server.listen()
-        audio_server.listen()
-
-        print(f"🔹 Waiting for client connections...")
-
-        video_conn, video_addr = video_server.accept()
-        audio_conn, audio_addr = audio_server.accept()
-
-
-        print(f"Video connected: {video_addr}")
-        print(f"Audio connected: {audio_addr}")
-
-        handle_clients(video_conn, audio_conn)
-
-    print("🔹 Server stopped.")
+if __name__ == '__main__':
+    main()
