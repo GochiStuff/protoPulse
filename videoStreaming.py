@@ -6,16 +6,15 @@ import struct
 import tkinter as tk
 from tkinter import messagebox
 
+# Ports and file settings.
+VIDEO_PORT = 9999
+AUDIO_PORT = 10000
+CONTROL_PORT = 10001
+VIDEO_FILE = 'video.mp4'  # Ensure this file exists.
 
-VIDEO_PORT = 4000
-AUDIO_PORT = 4001
-CONTROL_PORT = 6969
-VIDEO_FILE = 'video.mp4'  
-
+# Global variable for the control connection.
 control_conn = None
-control_conn_lock = threading.Lock()  
-
-
+control_conn_lock = threading.Lock()  # To protect access to control_conn.
 
 def get_video_info(filename):
     """Probe the video file and return (width, height, fps)."""
@@ -149,18 +148,61 @@ def start_audio_server():
         print(f"[Audio] Connection from {addr}")
         stream_audio(conn, VIDEO_FILE)
 
-
-# START SERVER
-def main():
+def start_server_threads():
+    """
+    Start the video, audio, and control servers in separate threads.
+    """
     threads = []
     threads.append(threading.Thread(target=start_video_server, daemon=True))
     threads.append(threading.Thread(target=start_audio_server, daemon=True))
     threads.append(threading.Thread(target=control_connection_accept, daemon=True))
-
     for t in threads:
         t.start()
-    
-    
+    return threads
+
+def create_gui():
+    """
+    Create a simple Tkinter GUI with Play, Pause, and Stop buttons.
+    """
+    root = tk.Tk()
+    root.title("Server Control")
+
+    # Create a frame for the buttons.
+    frame = tk.Frame(root, padx=10, pady=10)
+    frame.pack()
+
+    btn_play = tk.Button(frame, text="PLAY", width=10, command=lambda: send_control_command("PLAY"))
+    btn_play.grid(row=0, column=0, padx=5, pady=5)
+
+    btn_pause = tk.Button(frame, text="PAUSE", width=10, command=lambda: send_control_command("PAUSE"))
+    btn_pause.grid(row=0, column=1, padx=5, pady=5)
+
+    btn_stop = tk.Button(frame, text="STOP", width=10, command=lambda: send_control_command("STOP"))
+    btn_stop.grid(row=0, column=2, padx=5, pady=5)
+
+    # Optionally, add a status label.
+    status_label = tk.Label(root, text="Waiting for control client connection...", padx=10, pady=10)
+    status_label.pack()
+
+    # Update status periodically.
+    def update_status():
+        with control_conn_lock:
+            if control_conn:
+                status_label.config(text="Control client connected.")
+            else:
+                status_label.config(text="Waiting for control client connection...")
+        root.after(1000, update_status)
+
+    update_status()
+    return root
+
+def main():
+    # Start the video, audio, and control servers.
+    start_server_threads()
+
+    # Create and run the GUI.
+    gui = create_gui()
+    gui.mainloop()
 
 if __name__ == '__main__':
     main()
